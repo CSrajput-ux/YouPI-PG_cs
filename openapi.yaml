@@ -21,7 +21,12 @@ paths:
       description: |
         Initializes a new payment session. Returns the payment identifier and the checkoutUrl
         to be loaded inside the YOUPI modal iframe or standalone browser window.
+        Preferred production authentication is bearer token auth with secret API keys.
+        Legacy `X-Merchant-Id` is still supported for backward compatibility.
       operationId: createPayment
+      security:
+        - MerchantBearerAuth: []
+        - MerchantIdHeader: []
       parameters:
         - name: X-Merchant-Id
           in: header
@@ -103,6 +108,118 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /api/v1/admin/api-keys:
+    get:
+      summary: List merchant API keys
+      description: Returns masked API keys for the authenticated merchant.
+      operationId: listMerchantApiKeys
+      security:
+        - MerchantBearerAuth: []
+        - MerchantIdHeader: []
+      responses:
+        '200':
+          description: Masked API keys.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  keys:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ApiKeyRecord'
+    post:
+      summary: Create merchant API key
+      description: Creates a new API key. Secret is returned only once in this response.
+      operationId: createMerchantApiKey
+      security:
+        - MerchantBearerAuth: []
+        - MerchantIdHeader: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                environment:
+                  type: string
+                  enum: [test, live]
+                scopes:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        '201':
+          description: API key created (secret visible once).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  key:
+                    $ref: '#/components/schemas/ApiKeyRecord'
+                  keyId:
+                    type: string
+                  apiKeySecret:
+                    type: string
+
+  /api/v1/admin/api-keys/{id}/rotate:
+    post:
+      summary: Rotate merchant API key secret
+      operationId: rotateMerchantApiKey
+      security:
+        - MerchantBearerAuth: []
+        - MerchantIdHeader: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: API key rotated (new secret visible once).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  key:
+                    $ref: '#/components/schemas/ApiKeyRecord'
+                  keyId:
+                    type: string
+                  apiKeySecret:
+                    type: string
+
+  /api/v1/admin/api-keys/{id}/revoke:
+    post:
+      summary: Revoke merchant API key
+      operationId: revokeMerchantApiKey
+      security:
+        - MerchantBearerAuth: []
+        - MerchantIdHeader: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: API key revoked.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  key:
+                    $ref: '#/components/schemas/ApiKeyRecord'
+
   /api/v1/checkout/{id}/cancel:
     post:
       summary: Cancel Payment Session
@@ -138,6 +255,17 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
 
 components:
+  securitySchemes:
+    MerchantBearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: APIKey
+      description: Secret API key token (`ypg_test_sk_...` / `ypg_live_sk_...`)
+    MerchantIdHeader:
+      type: apiKey
+      in: header
+      name: X-Merchant-Id
+      description: Legacy merchant identifier header for backward compatibility.
   schemas:
     CreatePaymentRequest:
       type: object
@@ -250,6 +378,36 @@ components:
         metadata:
           type: object
           additionalProperties: true
+
+    ApiKeyRecord:
+      type: object
+      properties:
+        id:
+          type: string
+        merchantId:
+          type: string
+        keyId:
+          type: string
+        name:
+          type: string
+          nullable: true
+        environment:
+          type: string
+          enum: [test, live]
+        scopes:
+          type: array
+          items:
+            type: string
+        isActive:
+          type: boolean
+        maskedSecret:
+          type: string
+        lastUsedAt:
+          type: string
+          nullable: true
+        revokedAt:
+          type: string
+          nullable: true
 
     WebhookPayload:
       type: object

@@ -29,7 +29,8 @@ import {
   ObservationRepository,
   SupportTicketRepository,
   AuditLogRepository,
-  DeviceRepository
+  DeviceRepository,
+  MerchantApiKeyRepository
 } from '@youpi/db';
 import {
   QueueEngine,
@@ -69,6 +70,7 @@ export function createPaymentApp(customDb = null, options = {}) {
   const ticketRepo = new SupportTicketRepository(db);
   const auditRepo = new AuditLogRepository(db);
   const deviceRepo = new DeviceRepository(db);
+  const apiKeyRepo = new MerchantApiKeyRepository(db);
 
   const eventEmitter = new EventEmitter();
 
@@ -418,6 +420,7 @@ export function createPaymentApp(customDb = null, options = {}) {
     customerSessionRepo,
     sessionRepo,
     deviceRepo,
+    apiKeyRepo,
     obsRepo,
     ticketRepo,
     auditRepo,
