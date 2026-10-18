@@ -1,12 +1,14 @@
 import { HttpServer } from '../server.js';
 import { toPaise, toRupeesString, resolveRuntimeUrls, PaymentStatus } from '@youpi/common';
 import { isTerminalStatus, toPublicOutcome } from '@youpi/core';
+import { resolveMerchantAuth, MerchantScopes } from '../auth/merchant-auth.js';
 
 /**
  * Registers merchant-facing payment routes.
  * @param {HttpServer} server
  * @param {{
  *   merchantRepo: import('@youpi/db').MerchantRepository,
+ *   apiKeyRepo: import('@youpi/db').MerchantApiKeyRepository,
  *   accountRepo: import('@youpi/db').ReceivingAccountRepository,
  *   sessionRepo: import('@youpi/db').PaymentSessionRepository,
  *   queueEngine: import('@youpi/core').QueueEngine,
@@ -31,14 +33,15 @@ export function registerPaymentRoutes(server, ctx) {
     const body = await HttpServer.parseBody(req);
     const idempotencyKey = req.headers['idempotency-key'] || body.idempotencyKey;
 
-    // Resolve merchant (default to first/demo merchant if none passed in header)
-    const merchantId = req.headers['x-merchant-id'] || body.merchantId;
-    let merchant;
-    if (merchantId) {
-      merchant = ctx.merchantRepo.findById(merchantId);
-    } else {
-      merchant = ctx.merchantRepo.getDefault ? ctx.merchantRepo.getDefault() : (ctx.merchantRepo.findById('00000000-0000-0000-0000-000000000001') || ctx.merchantRepo.findAll()[0]);
-    }
+    const merchantAuth = resolveMerchantAuth(req, res, ctx, {
+      fallbackMerchantId: body.merchantId,
+      allowDefault: true,
+      requiredScopes: [MerchantScopes.WRITE],
+      onLegacyMissingStatus: 400,
+      onLegacyMissingMessage: 'Merchant not found or not configured.'
+    });
+    if (!merchantAuth) return;
+    const merchant = merchantAuth.merchant;
 
     if (!merchant) {
       HttpServer.json(res, 400, { error: 'Merchant not found or not configured.' });
@@ -335,13 +338,13 @@ export function registerPaymentRoutes(server, ctx) {
 
   // GET /api/v1/orders/:orderId/cod (Developer COD Info by Merchant Order ID)
   server.get('/api/v1/orders/:orderId/cod', async (req, res, params) => {
-    const merchantId = req.headers['x-merchant-id'] || req.query.merchantId;
-    let merchant;
-    if (merchantId) {
-      merchant = ctx.merchantRepo.findById(merchantId);
-    } else {
-      merchant = ctx.merchantRepo.getDefault ? ctx.merchantRepo.getDefault() : (ctx.merchantRepo.findById('00000000-0000-0000-0000-000000000001') || ctx.merchantRepo.findAll()[0]);
-    }
+    const merchantAuth = resolveMerchantAuth(req, res, ctx, {
+      fallbackMerchantId: req.query.merchantId,
+      allowDefault: true,
+      requiredScopes: [MerchantScopes.READ]
+    });
+    if (!merchantAuth) return;
+    const merchant = merchantAuth.merchant;
 
     if (!merchant) {
       HttpServer.json(res, 404, { error: 'Merchant not found.' });

@@ -146,6 +146,27 @@ CREATE TABLE IF NOT EXISTS webhook_deliveries (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- 7b. Merchant API Keys Table
+CREATE TABLE IF NOT EXISTS merchant_api_keys (
+    id TEXT PRIMARY KEY,
+    merchant_id TEXT NOT NULL REFERENCES merchants(id) ON DELETE CASCADE,
+    key_id TEXT UNIQUE NOT NULL,
+    key_name TEXT,
+    environment TEXT NOT NULL DEFAULT 'test',
+    secret_hash TEXT NOT NULL,
+    secret_last4 TEXT NOT NULL,
+    scopes TEXT NOT NULL DEFAULT '[]',
+    is_active INTEGER NOT NULL DEFAULT 1,
+    revoked_at TEXT,
+    rotated_at TEXT,
+    last_used_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_merchant_api_keys_merchant ON merchant_api_keys (merchant_id, is_active);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_merchant_api_keys_key_id ON merchant_api_keys (key_id);
+
 -- 8. Support Tickets & Ticket Messages
 CREATE TABLE IF NOT EXISTS support_tickets (
     id TEXT PRIMARY KEY,
@@ -229,5 +250,4 @@ CREATE INDEX IF NOT EXISTS idx_devices_customer ON devices (customer_id);
 CREATE INDEX IF NOT EXISTS idx_devices_fingerprint ON devices (fingerprint_hash);
 CREATE INDEX IF NOT EXISTS idx_devices_token ON devices (device_token);
 CREATE INDEX IF NOT EXISTS idx_payment_sessions_device ON payment_sessions (device_id);
-
 

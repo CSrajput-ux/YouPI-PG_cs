@@ -5,12 +5,14 @@ export class YoupiPaymentClient {
    * @param {{
    *   apiUrl?: string,
    *   merchantId?: string,
+   *   apiKey?: string,
    *   webhookSecret?: string
    * }} options
    */
   constructor(options = {}) {
     this.apiUrl = (options.apiUrl || process.env.BASE_PAYMENT_API_URL || 'http://localhost:6100').replace(/\/+$/, '');
     this.merchantId = options.merchantId || null;
+    this.apiKey = options.apiKey || null;
     this.webhookSecret = options.webhookSecret || null;
   }
 
@@ -41,7 +43,9 @@ export class YoupiPaymentClient {
       'Content-Type': 'application/json'
     };
 
-    if (this.merchantId) {
+    if (this.apiKey) {
+      headers.Authorization = 'Bearer ' + this.apiKey;
+    } else if (this.merchantId) {
       headers['X-Merchant-Id'] = this.merchantId;
     }
     if (params.idempotencyKey) {

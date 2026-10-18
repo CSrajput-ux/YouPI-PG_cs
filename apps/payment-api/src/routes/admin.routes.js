@@ -1,9 +1,11 @@
 import crypto from 'node:crypto';
 import { HttpServer } from '../server.js';
 import { PaymentStatus, PaymentMethod, SellingMode, AuditActorType, isValidVpa, toRupeesString, deriveCloudflareRoutes, resolveRuntimeUrls } from '@youpi/common';
+import { DEFAULT_MERCHANT_API_KEY_SCOPES } from '@youpi/db';
 import { PaymentVerificationPipeline } from '@youpi/core';
 import { globalTunnelManager } from '../services/tunnel-manager.js';
 import { formatQrDataUrl } from '../services/whatsapp-berry.service.js';
+import { resolveMerchantAuth, MerchantScopes } from '../auth/merchant-auth.js';
 
 function resolveSellingModeAndMethods(body, currentBranding = {}) {
   const inputBranding = body.branding || {};
@@ -89,6 +91,7 @@ function resolveSellingModeAndMethods(body, currentBranding = {}) {
  *   sessionRepo: import('@youpi/db').PaymentSessionRepository,
  *   accountRepo: import('@youpi/db').ReceivingAccountRepository,
  *   merchantRepo: import('@youpi/db').MerchantRepository,
+ *   apiKeyRepo: import('@youpi/db').MerchantApiKeyRepository,
  *   auditRepo: import('@youpi/db').AuditLogRepository,
  *   queueEngine: import('@youpi/core').QueueEngine
  * }} ctx
@@ -103,6 +106,16 @@ export function registerAdminRoutes(server, ctx) {
     return ctx.merchantRepo.getDefault
       ? ctx.merchantRepo.getDefault()
       : (ctx.merchantRepo.findById('00000000-0000-0000-0000-000000000001') || ctx.merchantRepo.findAll()[0]);
+  };
+
+  const resolveAdminAuth = (req, res, options = {}) => {
+    return resolveMerchantAuth(req, res, ctx, {
+      fallbackMerchantId: options.merchantId || null,
+      allowDefault: false,
+      requiredScopes: options.requiredScopes || [MerchantScopes.SETTLEMENTS_ADMIN],
+      onLegacyMissingStatus: 401,
+      onLegacyMissingMessage: 'Merchant admin authentication required.'
+    });
   };
 
   // GET /api/v1/admin/queue
@@ -1040,6 +1053,128 @@ export function registerAdminRoutes(server, ctx) {
     });
   });
 
+  // GET /api/v1/admin/api-keys (List masked merchant API keys)
+  server.get('/api/v1/admin/api-keys', async (req, res) => {
+    const auth = resolveAdminAuth(req, res, {
+      merchantId: req.query?.merchantId || null,
+      requiredScopes: [MerchantScopes.SETTLEMENTS_ADMIN]
+    });
+    if (!auth) return;
+
+    const includeRevoked = req.query?.includeRevoked === 'true' || req.query?.includeRevoked === '1';
+    const keys = ctx.apiKeyRepo.listByMerchantId(auth.merchant.id, { includeRevoked });
+    HttpServer.json(res, 200, {
+      keys: keys.map(key => ctx.apiKeyRepo.maskForList(key))
+    });
+  });
+
+  // POST /api/v1/admin/api-keys (Create merchant API key; secret returned once)
+  server.post('/api/v1/admin/api-keys', async (req, res) => {
+    const body = await HttpServer.parseBody(req);
+    const auth = resolveAdminAuth(req, res, {
+      merchantId: body.merchantId || null,
+      requiredScopes: [MerchantScopes.SETTLEMENTS_ADMIN]
+    });
+    if (!auth) return;
+
+    const environment = body.environment === 'live' ? 'live' : 'test';
+    const scopes = Array.isArray(body.scopes) && body.scopes.length > 0
+      ? body.scopes
+      : DEFAULT_MERCHANT_API_KEY_SCOPES;
+    const created = ctx.apiKeyRepo.create({
+      merchantId: auth.merchant.id,
+      name: body.name,
+      environment,
+      scopes
+    });
+
+    ctx.auditRepo.log({
+      merchantId: auth.merchant.id,
+      entityType: 'MERCHANT_API_KEY',
+      entityId: created.id,
+      action: 'API_KEY_CREATED',
+      actorType: AuditActorType.ADMIN,
+      details: {
+        keyId: created.keyId,
+        environment: created.environment,
+        scopes: created.scopes
+      }
+    });
+
+    HttpServer.json(res, 201, {
+      key: ctx.apiKeyRepo.maskForList(created),
+      keyId: created.keyId,
+      apiKeySecret: created.rawSecret
+    });
+  });
+
+  // POST /api/v1/admin/api-keys/:id/rotate (Rotate secret and return new secret once)
+  server.post('/api/v1/admin/api-keys/:id/rotate', async (req, res, params) => {
+    const body = await HttpServer.parseBody(req);
+    const auth = resolveAdminAuth(req, res, {
+      merchantId: body.merchantId || null,
+      requiredScopes: [MerchantScopes.SETTLEMENTS_ADMIN]
+    });
+    if (!auth) return;
+
+    const rotated = ctx.apiKeyRepo.rotate(params.id, auth.merchant.id);
+    if (!rotated) {
+      HttpServer.json(res, 404, { error: 'Active API key not found.' });
+      return;
+    }
+
+    ctx.auditRepo.log({
+      merchantId: auth.merchant.id,
+      entityType: 'MERCHANT_API_KEY',
+      entityId: rotated.id,
+      action: 'API_KEY_ROTATED',
+      actorType: AuditActorType.ADMIN,
+      details: {
+        keyId: rotated.keyId,
+        environment: rotated.environment
+      }
+    });
+
+    HttpServer.json(res, 200, {
+      key: ctx.apiKeyRepo.maskForList(rotated),
+      keyId: rotated.keyId,
+      apiKeySecret: rotated.rawSecret
+    });
+  });
+
+  // POST /api/v1/admin/api-keys/:id/revoke (Revoke API key)
+  server.post('/api/v1/admin/api-keys/:id/revoke', async (req, res, params) => {
+    const body = await HttpServer.parseBody(req);
+    const auth = resolveAdminAuth(req, res, {
+      merchantId: body.merchantId || null,
+      requiredScopes: [MerchantScopes.SETTLEMENTS_ADMIN]
+    });
+    if (!auth) return;
+
+    const revoked = ctx.apiKeyRepo.revoke(params.id, auth.merchant.id);
+    if (!revoked) {
+      HttpServer.json(res, 404, { error: 'API key not found.' });
+      return;
+    }
+
+    ctx.auditRepo.log({
+      merchantId: auth.merchant.id,
+      entityType: 'MERCHANT_API_KEY',
+      entityId: revoked.id,
+      action: 'API_KEY_REVOKED',
+      actorType: AuditActorType.ADMIN,
+      details: {
+        keyId: revoked.keyId,
+        environment: revoked.environment
+      }
+    });
+
+    HttpServer.json(res, 200, {
+      success: true,
+      key: ctx.apiKeyRepo.maskForList(revoked)
+    });
+  });
+
   // GET /api/v1/admin/cod-orders (List Cash on Delivery orders)
   server.get('/api/v1/admin/cod-orders', async (req, res) => {
     let merchant = req.query.merchantId ? ctx.merchantRepo.findById(req.query.merchantId) : null;
@@ -1908,23 +2043,14 @@ export function registerAdminRoutes(server, ctx) {
 
   // Helper for Simulator Endpoint Authentication (Section 28 & Acceptance Test 34)
   function checkSimulatorAuth(req, res) {
-    const merchantId = req.headers['x-merchant-id'] || req.query?.merchantId || null;
-    if (!merchantId) {
-      HttpServer.json(res, 401, {
-        success: false,
-        error: 'Unauthorized: Merchant authentication required to access developer simulator.'
-      });
-      return null;
-    }
-
-    const merchant = ctx.merchantRepo.findById(merchantId);
-    if (!merchant) {
-      HttpServer.json(res, 403, {
-        success: false,
-        error: 'Forbidden: Invalid or unknown merchant identity.'
-      });
-      return null;
-    }
+    const auth = resolveMerchantAuth(req, res, ctx, {
+      fallbackMerchantId: req.query?.merchantId || null,
+      allowDefault: false,
+      requiredScopes: [MerchantScopes.SETTLEMENTS_ADMIN],
+      onLegacyMissingStatus: 401,
+      onLegacyMissingMessage: 'Unauthorized: Merchant authentication required to access developer simulator.'
+    });
+    if (!auth) return null;
 
     // Explicitly reject if a customer session token is provided without admin credentials
     const authHeader = req.headers['authorization'] || '';
@@ -1940,7 +2066,7 @@ export function registerAdminRoutes(server, ctx) {
       }
     }
 
-    return merchant;
+    return auth.merchant;
   }
 
   // 1. GET /api/v1/admin/dev/simulator/customers (Search / Select Existing Customer)
@@ -2384,4 +2510,3 @@ export function registerAdminRoutes(server, ctx) {
     });
   });
 }
-
